@@ -17,14 +17,15 @@ A small handful of fields are then overridden on every request with
 synthesized "in flight" values so the six-pack gauges actually move:
 
   - latitude/longitude orbit the schema fallback at standard rate
-    (3 deg/s right turn, ~0.02 deg radius)
-  - heading is synthesized from the orbit angle (HSI spins with the
-    aircraft)
-  - altitude oscillates ~3000 ft +/- 200 ft, ~50 s period
-  - vsi is the analytical derivative of the altitude sinusoid (in
-    phase with what the altimeter is doing)
-  - pitch is a small +/-2 deg sinusoid in phase with vsi
-  - roll is a steady 15 deg right bank (banked into the orbit)
+    (3 deg/s right turn = rate-1, ~0.02 deg radius, ~120 s/orbit)
+  - heading leads the orbit angle by 90 deg so the nose tracks the
+    direction of travel (HSI spins with the aircraft)
+  - altitude is steady at 2500 ft (level turn, no climb/descent)
+  - vsi is 0 (level flight)
+  - pitch is 0 (level flight; a real coordinated turn would carry a
+    couple of degrees nose-up but we keep it simple)
+  - roll is a steady 15 deg right bank (the bank that produces a
+    rate-1 turn at ~100 kt - matches the orbit rate above)
   - ias is a steady 100 kt
   - sim_ready is always true (this is a fake sim - it's always live)
 
@@ -51,15 +52,15 @@ DEFAULT_SCHEMA = Path(__file__).resolve().parent.parent / "schema.json"
 # Animated demo flight constants. Kept at module scope so they show up
 # in the startup banner and are easy to tweak without hunting through
 # the request handler. The vsi peak is the analytical derivative of
-# the altitude sinusoid, so changing ALT_AMPLITUDE_FT or ALT_PERIOD_S
-# automatically changes the VSI swing - keep them in sync.
-ORBIT_RADIUS_DEG = 0.02       # ~1.2 NM at LLBG latitude
-ORBIT_RATE_DEG_S = 3.0        # standard rate, full orbit in 120 s
-BANK_DEG = 15.0
-ALT_CENTER_FT = 3000.0
-ALT_AMPLITUDE_FT = 200.0
+# the altitude sinusoid, so non-zero ALT_AMPLITUDE_FT will automatically
+# drive a non-zero VSI swing - keep them coherent.
+ORBIT_RADIUS_DEG = 0.02       # ~1.2 NM at LLBG (Tel Aviv) latitude
+ORBIT_RATE_DEG_S = 3.0        # rate-1 (standard rate), 120 s/orbit
+BANK_DEG = 15.0               # the bank that yields rate-1 at ~100 kt
+ALT_CENTER_FT = 2500.0
+ALT_AMPLITUDE_FT = 0.0        # 0 -> level turn; bump for an oscillation
 ALT_PERIOD_S = 50.0
-PITCH_AMPLITUDE_DEG = 2.0
+PITCH_AMPLITUDE_DEG = 0.0     # 0 -> nose level; couples to ALT_AMPLITUDE
 IAS_KT = 100.0
 
 
@@ -91,11 +92,15 @@ def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float) -
     # 90 deg: at theta=0 (north of centre) heading=090 (eastbound).
     heading = (theta_deg + 90.0) % 360.0
 
-    omega = 2.0 * math.pi / ALT_PERIOD_S
-    alt = ALT_CENTER_FT + ALT_AMPLITUDE_FT * math.sin(omega * t)
-    alt_rate_ft_per_s = ALT_AMPLITUDE_FT * omega * math.cos(omega * t)
-    vsi_fpm = alt_rate_ft_per_s * 60.0
-    pitch_norm = math.cos(omega * t)   # in phase with altitude rate
+    if ALT_AMPLITUDE_FT != 0.0 and ALT_PERIOD_S > 0.0:
+        omega = 2.0 * math.pi / ALT_PERIOD_S
+        alt = ALT_CENTER_FT + ALT_AMPLITUDE_FT * math.sin(omega * t)
+        vsi_fpm = ALT_AMPLITUDE_FT * omega * math.cos(omega * t) * 60.0
+        pitch_norm = math.cos(omega * t)
+    else:
+        alt = ALT_CENTER_FT
+        vsi_fpm = 0.0
+        pitch_norm = 0.0
 
     if "latitude" in snap:
         snap["latitude"] = round(lat0 + ORBIT_RADIUS_DEG * math.cos(theta), 6)
@@ -158,13 +163,17 @@ def banner(schema: dict, host: str, port: int) -> None:
     by_name = {f["name"]: f for f in schema["fields"]}
     lat0 = float(by_name.get("latitude", {}).get("fallback", 0.0))
     lon0 = float(by_name.get("longitude", {}).get("fallback", 0.0))
+    if ALT_AMPLITUDE_FT != 0.0:
+        alt_desc = f"~{int(ALT_CENTER_FT)} ft \u00b1 {int(ALT_AMPLITUDE_FT)} ft"
+    else:
+        alt_desc = f"level @ {int(ALT_CENTER_FT)} ft"
     print("cvfr-bridge / fake (dev simulator)")
     print(f"  schema  : schema.json v{version}")
     print(f"  serving : http://{host}:{port}/")
     print(
         f"  orbit   : {ORBIT_RADIUS_DEG}\u00b0 around "
-        f"{lat0:.4f},{lon0:.4f} @ {ORBIT_RATE_DEG_S}\u00b0/s, "
-        f"~{int(ALT_CENTER_FT)} ft \u00b1 {int(ALT_AMPLITUDE_FT)} ft"
+        f"{lat0:.4f},{lon0:.4f} @ {ORBIT_RATE_DEG_S}\u00b0/s "
+        f"(rate-1, {BANK_DEG:.0f}\u00b0 bank), {alt_desc}"
     )
     print("Ctrl-C to stop.")
 
