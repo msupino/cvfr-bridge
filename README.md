@@ -89,27 +89,41 @@ python3 cvfrmap-bridge.py
 
 In X-Plane: `Settings → Network → Receive External Datarefs` must be enabled (default port `49000`). See [`python/README.md`](python/README.md) for remote-sim setup, schema details, and the `RPOS` vs `RREF` protocol breakdown.
 
+## Develop the web UI without X-Plane
+
+[`tools/cvfrmap-fake.py`](tools/cvfrmap-fake.py) is a dev-only "third backend" that serves the same JSON shape on the same port (`2020`) as the real backends, but with no X-Plane and no UDP — just a synthetic aircraft flying a 3°/s right orbit at ~3000 ft ± 200 ft around LLBG. Use it to develop the [cvfr-map](https://arielbider.github.io/cvfr-map/) web UI, tweak gauges, or demo the page when you don't have X-Plane handy. It reads `schema.json` for the port, field order, and fallbacks, so new schema fields appear in its output automatically.
+
+```bash
+python3 tools/cvfrmap-fake.py
+# → cvfr-bridge / fake (dev simulator)
+# →   serving : http://0.0.0.0:2020/
+```
+
+Then point the cvfr-map page at `http://localhost:2020/` as usual. The fake is a development tool only — it's intentionally not listed in the [Two backends, same wire format](#two-backends-same-wire-format) table above.
+
 ## Schema-driven architecture
 
 Both backends consume **[`schema.json`](schema.json)** at the repo root as the single source of truth for the JSON wire format. Add, remove, or rename a field there and both backends pick it up:
 
 ```
 schema.json (canonical, hand-edited)
-├──► python/cvfrmap-bridge.py           (reads at runtime via json.load)
+├──► python/cvfrmap-bridge.py    (X-Plane UDP backend)
 │      derives:
 │        - the LLBG fallback dict
 │        - the RREF dataref subscriptions
 │        - the JSON serialization order
 │
-└──► tools/gen_c_schema.py
-       generates:
-         c/schema.h                     (CMake custom_command, before compile)
-         ├── CVFR_PORT, CVFR_SCHEMA_VERSION
-         ├── CVFR_FIELD_<NAME>          string-literal field names
-         ├── CVFR_FORMAT_<NAME>         per-field printf format
-         ├── CVFR_FALLBACK_<NAME>       LLBG fallback constants
-         └── CVFR_JSON_TEMPLATE         single printf template for JSON body
-       then plugin.c #includes it
+├──► tools/gen_c_schema.py  ─►  c/schema.h  ─►  c/plugin.c  (X-Plane plugin backend)
+│      generates (CMake custom_command, before compile):
+│        ├── CVFR_PORT, CVFR_SCHEMA_VERSION
+│        ├── CVFR_FIELD_<NAME>          string-literal field names
+│        ├── CVFR_FORMAT_<NAME>         per-field printf format
+│        ├── CVFR_FALLBACK_<NAME>       LLBG fallback constants
+│        └── CVFR_JSON_TEMPLATE         single printf template for JSON body
+│
+└──► tools/cvfrmap-fake.py       (dev simulator, no X-Plane required)
+       reads schema.json at startup; every field initialised from its
+       fallback, then a synthetic orbit overlays the moving fields.
 ```
 
 `c/schema.h` is `.gitignore`d — every clean build regenerates it from `schema.json` so what's in the binary always matches the canonical source. To verify the generator output without compiling:
