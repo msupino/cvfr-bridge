@@ -61,7 +61,7 @@ ALT_CENTER_FT = 2500.0
 ALT_AMPLITUDE_FT = 0.0        # 0 -> level turn; bump for an oscillation
 ALT_PERIOD_S = 50.0
 PITCH_AMPLITUDE_DEG = 0.0     # 0 -> nose level; couples to ALT_AMPLITUDE
-IAS_KT = 100.0
+IAS_KT = 90.0
 
 
 def load_schema(path: Path) -> dict:
