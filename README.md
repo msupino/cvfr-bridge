@@ -127,9 +127,18 @@ When you change `schema.json`:
 
 The one bit of manual coupling that survives codegen is the **argument list to `snprintf` in `c/plugin.c`'s `format_json()`**: if you reorder fields in `schema.json`, you must also reorder the snprintf args to match the new template's positional argument order. The template itself regenerates correctly; only the argument values have no codegen.
 
-## Origin
+## Relation to the original cvfr-map server
 
-Replaces the [original Windows + MSFS server](https://arielbider.github.io/cvfr-map/) (PyInstaller .exe, FSUIPC-based) by Ariel Bider. Same wire format, but works on macOS/Linux + X-Plane.
+[cvfr-map](https://arielbider.github.io/cvfr-map/) by Ariel Bider ships with its **own** backend server — a Windows-only, PyInstaller-bundled `.exe` that reads aircraft state from **Microsoft Flight Simulator** (and FSX / Prepar3D) via FSUIPC and serves the same JSON shape on the same port. **That server is the right choice for MSFS users on Windows; this repo doesn't replace it.**
+
+This repo is a **sibling implementation for X-Plane**: same wire format and same iPad/web client, but reading from X-Plane's UDP API (Python flavor) or its plugin SDK (C flavor) instead of FSUIPC. The two backends pair this way:
+
+| If you fly | Use |
+|---|---|
+| MSFS / FSX / P3D on Windows | [Bider's original cvfr-map server](https://arielbider.github.io/cvfr-map/cvfr-map/server/CVFRMAP-SERVER.zip) |
+| X-Plane 12 (any platform) | this repo (`c/` for local sim, `python/` for remote/no-plugin) |
+
+Both speak the same JSON to the same iPad/web cvfr-map app, so users can switch sims without re-configuring the client.
 
 ## License
 
