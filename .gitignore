@@ -1,0 +1,16 @@
+# C plugin build output
+c/build/
+*.xpl
+
+# macOS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
