@@ -1,7 +1,7 @@
 /* cvfr-bridge.xpl - X-Plane plugin that serves aircraft pose as JSON
- * over HTTP on port 2020. Drop-in replacement for cvfrmap-bridge.py:
- * the iPad/web cvfr-map app polls GET / and gets the same JSON shape
- * (with a few extra fields for richer use cases).
+ * over HTTP on port CVFR_PORT (2020 by default). Drop-in compatible
+ * with python/cvfrmap-bridge.py - both serve the same wire format
+ * defined in the repo-root schema.json.
  *
  * Architecture:
  *   - flight-loop callback (runs at ~10 Hz on X-Plane's main thread)
@@ -11,9 +11,17 @@
  *   - shutdown: XPluginStop closes the listen socket (which unblocks
  *     accept), signals the thread to exit, joins.
  *
+ * The JSON wire format is defined in ../schema.json. CMake invokes
+ * tools/gen_c_schema.py before compilation to generate schema.h with
+ * the field names, format strings, and JSON template; the plugin's
+ * format_json() is then a single snprintf using CVFR_JSON_TEMPLATE,
+ * with no hand-maintained field-name string literals.
+ *
  * No external HTTP library: the HTTP we accept is trivially simple
- * (any GET / returns the JSON; no routing, no headers parsing).
+ * (any GET returns the JSON; no routing, no headers parsing).
  */
+
+#include "schema.h"   /* generated from ../schema.json by tools/gen_c_schema.py */
 
 #include <XPLMPlugin.h>
 #include <XPLMDataAccess.h>
@@ -39,16 +47,10 @@
 
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 
-/* Bind port. Same as cvfrmap-bridge.py so the iPad/web app needs no
- * config change to switch from the Python bridge to this plugin. */
-#define BRIDGE_PORT 2020
-
-/* Default position when X-Plane is loading or aircraft hasn't been
- * placed yet (lat==0 && lon==0). LLBG (Ben Gurion). */
-#define LLBG_LAT  32.0055
-#define LLBG_LON  34.8854
-#define LLBG_ALT  135
-#define LLBG_HDG  0.0
+/* All configurable constants come from the generated schema.h, which
+ * is built from ../schema.json. CVFR_PORT is the HTTP bind port;
+ * CVFR_FALLBACK_<NAME> are the LLBG fallback values used when the sim
+ * isn't ready (lat == lon == 0). */
 
 /* ------- dataref handles, resolved in XPluginStart ------------------ */
 
@@ -119,10 +121,10 @@ static float flight_loop_cb(float inElapsedSinceLastCall,
     s.qnh        = XPLMGetDataf(dr_qnh);
     s.sim_ready  = !(s.latitude == 0.0 && s.longitude == 0.0);
     if (!s.sim_ready) {
-        s.latitude  = LLBG_LAT;
-        s.longitude = LLBG_LON;
-        s.altitude  = LLBG_ALT;
-        s.heading   = LLBG_HDG;
+        s.latitude  = CVFR_FALLBACK_LATITUDE;
+        s.longitude = CVFR_FALLBACK_LONGITUDE;
+        s.altitude  = CVFR_FALLBACK_ALTITUDE;
+        s.heading   = CVFR_FALLBACK_HEADING;
     }
 
     pthread_mutex_lock(&snap_mu);
@@ -135,7 +137,15 @@ static float flight_loop_cb(float inElapsedSinceLastCall,
 /* ------- HTTP server thread ---------------------------------------- */
 
 /* Format the current snapshot into a JSON body. Returns bytes written
- * (always < cap; truncated to cap-1 if it would overflow). */
+ * (always < cap; truncated to cap-1 if it would overflow).
+ *
+ * The format string CVFR_JSON_TEMPLATE comes from the generated
+ * schema.h; argument order MUST match the field order in
+ * ../schema.json's "fields" array. If you reorder fields there, the
+ * gen step regenerates the template, but you also have to reorder
+ * the snprintf args here to keep their positional alignment with
+ * the template's % conversions. (This is the one bit of manual
+ * coupling that survives the codegen.) */
 static int format_json(char* buf, size_t cap)
 {
     snapshot_t s;
@@ -143,27 +153,21 @@ static int format_json(char* buf, size_t cap)
     s = snap;
     pthread_mutex_unlock(&snap_mu);
 
-    /* Numeric formatting matches the Python bridge's rounding so the
-     * iPad app sees identical-looking values. */
-    return snprintf(buf, cap,
-        "{"
-        "\"latitude\":%.6f,"
-        "\"longitude\":%.6f,"
-        "\"altitude\":%d,"
-        "\"heading\":%.1f,"
-        "\"variation\":%.1f,"
-        "\"pitch\":%.2f,"
-        "\"roll\":%.2f,"
-        "\"ias\":%.1f,"
-        "\"vsi\":%d,"
-        "\"wind_dir\":%.0f,"
-        "\"wind_speed\":%.1f,"
-        "\"qnh\":%.2f,"
-        "\"sim_ready\":%s"
-        "}",
-        s.latitude, s.longitude, s.altitude, s.heading, s.variation,
-        s.pitch, s.roll, s.ias, s.vsi, s.wind_dir, s.wind_speed, s.qnh,
-        s.sim_ready ? "true" : "false");
+    return snprintf(buf, cap, CVFR_JSON_TEMPLATE,
+        s.latitude,    /* latitude   */
+        s.longitude,   /* longitude  */
+        s.altitude,    /* altitude   */
+        s.heading,     /* heading    */
+        s.variation,   /* variation  */
+        s.pitch,       /* pitch      */
+        s.roll,        /* roll       */
+        s.ias,         /* ias        */
+        s.vsi,         /* vsi        */
+        s.wind_dir,    /* wind_dir   */
+        s.wind_speed,  /* wind_speed */
+        s.qnh,         /* qnh        */
+        s.sim_ready ? "true" : "false"   /* sim_ready */
+    );
 }
 
 /* Serve one connection: read the request line (we don't care about
@@ -241,14 +245,14 @@ static int http_start(void)
     struct sockaddr_in addr = {0};
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);   /* 0.0.0.0 - reachable from LAN (iPad) */
-    addr.sin_port        = htons(BRIDGE_PORT);
+    addr.sin_port        = htons(CVFR_PORT);
 
     if (bind(listen_fd, (struct sockaddr*)&addr, sizeof addr) < 0) {
         char msg[128];
         snprintf(msg, sizeof msg,
             "cvfr-bridge: bind(0.0.0.0:%d) failed: %s "
             "(is cvfrmap-bridge.py still running?)\n",
-            BRIDGE_PORT, strerror(errno));
+            CVFR_PORT, strerror(errno));
         XPLMDebugString(msg);
         close(listen_fd);
         listen_fd = -1;
@@ -272,7 +276,8 @@ static int http_start(void)
 
     char ok[128];
     snprintf(ok, sizeof ok,
-        "cvfr-bridge: HTTP listening on http://0.0.0.0:%d/\n", BRIDGE_PORT);
+        "cvfr-bridge: HTTP listening on http://0.0.0.0:%d/ (schema v%s)\n",
+        CVFR_PORT, CVFR_SCHEMA_VERSION);
     XPLMDebugString(ok);
     return 0;
 }
@@ -298,8 +303,10 @@ PLUGIN_API int XPluginStart(char* outName, char* outSig, char* outDesc)
 {
     strcpy(outName, "cvfr-bridge");
     strcpy(outSig,  "cvfr.bridge.json");
-    strcpy(outDesc, "Serves aircraft pose as JSON on http://localhost:2020/ "
-                    "for the cvfr-map iPad/web app");
+    snprintf(outDesc, 256,
+        "Serves aircraft pose as JSON on http://localhost:%d/ (schema v%s) "
+        "for the cvfr-map iPad/web app",
+        CVFR_PORT, CVFR_SCHEMA_VERSION);
 
     dr_lat       = XPLMFindDataRef("sim/flightmodel/position/latitude");
     dr_lon       = XPLMFindDataRef("sim/flightmodel/position/longitude");

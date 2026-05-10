@@ -27,54 +27,45 @@ import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 
 XP_HOST = "127.0.0.1"
 XP_PORT = 49000
-BRIDGE_PORT = 2020
 RPOS_HZ = 5     # X-Plane RPOS broadcast rate
 RREF_HZ = 5     # X-Plane RREF broadcast rate per dataref
 
-# Datarefs we subscribe to via RREF. Each gets a unique numeric index
-# (the int we send with RREF; X-Plane echoes it back in every value
-# packet so we know which dataref each value belongs to). Keep indices
-# stable across runs - X-Plane caches them in its internal subscription
-# table per source IP+port.
-RREF_DATAREFS: dict[int, str] = {
-    1: "sim/flightmodel/position/magnetic_variation",       # deg, E positive
-    2: "sim/flightmodel/position/indicated_airspeed",       # KIAS
-    3: "sim/flightmodel/position/vh_ind_fpm",               # vertical speed, fpm
-    4: "sim/cockpit2/gauges/indicators/wind_speed_kts",     # kt
-    5: "sim/cockpit2/gauges/indicators/wind_heading_deg_mag", # deg mag (FROM)
-    6: "sim/cockpit2/gauges/actuators/barometer_setting_in_hg_pilot",  # inHg
-}
+# ---------------------------------------------------------------------
+# Schema-driven setup. Both cvfr-bridge backends (this script and the
+# C plugin under c/) consume ../schema.json as the single source of
+# truth for the JSON wire format. Everything below derives from it:
+# the LLBG fallback dict, the RREF subscriptions, and (via field-order
+# preservation) the JSON serialization.
+# ---------------------------------------------------------------------
+SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.json"
+with SCHEMA_PATH.open() as _f:
+    SCHEMA = json.load(_f)
 
-# Where the RREF values land in our shared snapshot dict.
-RREF_KEY: dict[int, str] = {
-    1: "variation",
-    2: "ias",
-    3: "vsi",
-    4: "wind_speed",
-    5: "wind_dir",
-    6: "qnh",
-}
+BRIDGE_PORT = SCHEMA["port"]
+SCHEMA_VERSION = SCHEMA.get("version", "0.0.0")
 
-# Fallback when the sim isn't ready (lat == lon == 0). Ben Gurion
-# airport, so the iPad map shows something sensible at startup.
-LLBG = {
-    "latitude": 32.0055,
-    "longitude": 34.8854,
-    "altitude": 135,
-    "heading": 0.0,
-    "variation": 4.7,    # roughly correct for Israel in 2026
-    "pitch": 0.0,
-    "roll": 0.0,
-    "ias": 0.0,
-    "vsi": 0,
-    "wind_speed": 0.0,
-    "wind_dir": 0.0,
-    "qnh": 29.92,
-    "sim_ready": False,
-}
+# Build the per-field config tables from schema.json. Each field has a
+# source kind ("rpos" | "rref" | "computed") plus the bits each kind
+# needs (offset+ctype for RPOS, dataref path for RREF, expression for
+# computed). We only act on rref + the standard rpos/computed shape;
+# the rpos parser in parse_rpos() and the computed expressions in
+# xplane_reader() are still hand-coded for clarity.
+LLBG: dict = {f["name"]: f["fallback"] for f in SCHEMA["fields"]}
+LLBG["sim_ready"] = False  # always false at startup regardless of schema fallback
+
+# RREF subscriptions: dataref path -> snapshot field name. We assign
+# RREF indices in declaration order. Keep this stable across runs;
+# X-Plane caches the subscription table per source IP:port.
+RREF_FIELDS: list[tuple[int, str, str]] = [   # (rref_index, dataref_path, field_name)
+    (i + 1, f["source"]["dataref"], f["name"])
+    for i, f in enumerate(SCHEMA["fields"])
+    if f["source"]["kind"] == "rref"
+]
+RREF_KEY: dict[int, str] = {idx: name for idx, _, name in RREF_FIELDS}
 
 aircraft: dict = dict(LLBG)
 aircraft_lock = threading.Lock()
@@ -99,7 +90,7 @@ def subscribe_rref(sock: socket.socket) -> None:
     """Register all RREF subscriptions. Must be re-sent if X-Plane forgets
     them (e.g. after a sim restart) - we just re-send unconditionally
     every iteration of the reader loop, idempotent."""
-    for idx, dref in RREF_DATAREFS.items():
+    for idx, dref, _name in RREF_FIELDS:
         # RREF packet: 'RREF\0' + freq(int) + idx(int) + dref(400 bytes,
         # null-padded). 5 + 4 + 4 + 400 = 413 bytes total.
         pkt = (
@@ -283,10 +274,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_exit)
     ip = local_ip()
     threading.Thread(target=xplane_reader, daemon=True).start()
-    print("cvfr-bridge / Python flavor")
+    print(f"cvfr-bridge / Python flavor (schema v{SCHEMA_VERSION})")
     print(f"  iPad/browser IP : {ip}")
     print(f"  Listening on    : http://{ip}:{BRIDGE_PORT}")
     print(f"  X-Plane         : {XP_HOST}:{XP_PORT} (waiting for RPOS/RREF)")
+    print(f"  RREF subscribed : {len(RREF_FIELDS)} datarefs")
     print()
     try:
         HTTPServer(("0.0.0.0", BRIDGE_PORT), Handler).serve_forever()

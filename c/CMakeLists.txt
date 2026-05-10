@@ -17,8 +17,29 @@ if(NOT EXISTS "${SDK_XPLANE}/CHeaders/XPLM/XPLMPlugin.h")
         "Set -DSDK_XPLANE=/path/to/SDK on the cmake command line.")
 endif()
 
+# Generate schema.h from ../schema.json before building plugin.c.
+# Re-runs whenever schema.json or the generator change. The generated
+# header is .gitignored to avoid drift; clean rebuild always produces
+# it from scratch, so what's in the binary always matches what's in
+# schema.json.
+set(SCHEMA_JSON     "${CMAKE_CURRENT_SOURCE_DIR}/../schema.json")
+set(SCHEMA_GEN_PY   "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_c_schema.py")
+set(SCHEMA_H        "${CMAKE_CURRENT_BINARY_DIR}/schema.h")
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+add_custom_command(
+    OUTPUT  "${SCHEMA_H}"
+    COMMAND "${Python3_EXECUTABLE}" "${SCHEMA_GEN_PY}"
+            --schema "${SCHEMA_JSON}"
+            --output "${SCHEMA_H}"
+    DEPENDS "${SCHEMA_JSON}" "${SCHEMA_GEN_PY}"
+    COMMENT "Generating cvfr-bridge schema.h from schema.json"
+    VERBATIM)
+
 # Plugin output filename: must end in .xpl so X-Plane finds it.
-add_library(cvfr-bridge MODULE plugin.c)
+add_library(cvfr-bridge MODULE plugin.c "${SCHEMA_H}")
+target_include_directories(cvfr-bridge PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 set_target_properties(cvfr-bridge PROPERTIES
     OUTPUT_NAME "cvfr-bridge"
     PREFIX ""

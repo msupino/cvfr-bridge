@@ -25,7 +25,7 @@ $ curl http://localhost:2020/
 | Network access | Direct dataref reads, no network needed | UDP to `localhost:49000` (or remote X-Plane) |
 | Original use case | Local sim on the same Mac | Remote sim, plugin-restricted environments |
 
-**The wire format is identical.** Switching backends doesn't require any client-side change.
+**The wire format is identical.** Switching backends doesn't require any client-side change. Both backends derive their field list, types, and LLBG fallback values from a single source of truth — see [Schema-driven architecture](#schema-driven-architecture) below.
 
 ## JSON schema (both backends)
 
@@ -88,6 +88,44 @@ python3 cvfrmap-bridge.py
 ```
 
 In X-Plane: `Settings → Network → Receive External Datarefs` must be enabled (default port `49000`). See [`python/README.md`](python/README.md) for remote-sim setup, schema details, and the `RPOS` vs `RREF` protocol breakdown.
+
+## Schema-driven architecture
+
+Both backends consume **[`schema.json`](schema.json)** at the repo root as the single source of truth for the JSON wire format. Add, remove, or rename a field there and both backends pick it up:
+
+```
+schema.json (canonical, hand-edited)
+├──► python/cvfrmap-bridge.py           (reads at runtime via json.load)
+│      derives:
+│        - the LLBG fallback dict
+│        - the RREF dataref subscriptions
+│        - the JSON serialization order
+│
+└──► tools/gen_c_schema.py
+       generates:
+         c/schema.h                     (CMake custom_command, before compile)
+         ├── CVFR_PORT, CVFR_SCHEMA_VERSION
+         ├── CVFR_FIELD_<NAME>          string-literal field names
+         ├── CVFR_FORMAT_<NAME>         per-field printf format
+         ├── CVFR_FALLBACK_<NAME>       LLBG fallback constants
+         └── CVFR_JSON_TEMPLATE         single printf template for JSON body
+       then plugin.c #includes it
+```
+
+`c/schema.h` is `.gitignore`d — every clean build regenerates it from `schema.json` so what's in the binary always matches the canonical source. To verify the generator output without compiling:
+
+```bash
+python3 tools/gen_c_schema.py --schema schema.json --output /tmp/schema.h
+cat /tmp/schema.h
+```
+
+When you change `schema.json`:
+
+1. Run `c/build.sh` — picks up changes via CMake's dependency tracking.
+2. Restart the Python script — re-reads `schema.json` at startup.
+3. Update the README's [JSON schema](#json-schema-both-backends) field table to match (this is the only doc that's hand-maintained).
+
+The one bit of manual coupling that survives codegen is the **argument list to `snprintf` in `c/plugin.c`'s `format_json()`**: if you reorder fields in `schema.json`, you must also reorder the snprintf args to match the new template's positional argument order. The template itself regenerates correctly; only the argument values have no codegen.
 
 ## Origin
 
