@@ -1,6 +1,6 @@
 # cvfr-bridge
 
-Aircraft pose → JSON over HTTP. Two interchangeable backends for **X-Plane 12** that expose the same `GET http://<host>:2020/` endpoint, designed to feed the [cvfr-map](https://arielbider.github.io/cvfr-map/) iPad/web moving-map app (or anything else that wants live aircraft state on a LAN).
+Aircraft pose → JSON over HTTP. Two interchangeable backends for **X-Plane 12** that expose the same `GET http://<host>:2020/` endpoint, designed to feed the [cvfr-map](https://msupino.github.io/cvfr-map/) iPad/web moving-map app (or anything else that wants live aircraft state on a LAN).
 
 ```bash
 $ curl http://localhost:2020/
@@ -91,7 +91,7 @@ In X-Plane: `Settings → Network → Receive External Datarefs` must be enabled
 
 ## Develop the web UI without X-Plane
 
-[`tools/cvfrmap-fake.py`](tools/cvfrmap-fake.py) is a dev-only "third backend" that serves the same JSON shape on the same port (`2020`) as the real backends, but with no X-Plane and no UDP — just a synthetic aircraft flying a 3°/s right orbit at ~3000 ft ± 200 ft around LLBG. Use it to develop the [cvfr-map](https://arielbider.github.io/cvfr-map/) web UI, tweak gauges, or demo the page when you don't have X-Plane handy. It reads `schema.json` for the port, field order, and fallbacks, so new schema fields appear in its output automatically.
+[`tools/cvfrmap-fake.py`](tools/cvfrmap-fake.py) is a dev-only "third backend" that serves the same JSON shape on the same port (`2020`) as the real backends, but with no X-Plane and no UDP — just a synthetic aircraft flying a figure-8 over LLBG (two rate-1 loops, 240 s/cycle, level at 2500 ft, 90 KIAS). Use it to develop the [cvfr-map](https://msupino.github.io/cvfr-map/) web UI, tweak gauges, or demo the page when you don't have X-Plane handy. It reads `schema.json` for the port, field order, and fallbacks, so new schema fields appear in its output automatically.
 
 ```bash
 python3 tools/cvfrmap-fake.py
