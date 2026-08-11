@@ -61,6 +61,13 @@ distinction from a wind-CORRECTION calculation.
 time) without changing how often a client polls -- covers a route, or
 waits out the drift alert's 2-minute check, much sooner.
 
+--reverse (route mode only): after the last waypoint, fly the same route
+backwards to the first before looping, instead of teleporting straight
+back to the start. A reversed leg's altitude is the ORIGINAL leg's
+outboundAltitude (the altitude departing a point, forward, is the altitude
+arriving at that same point, in reverse) and its heading is a freshly
+computed reciprocal bearing, not just the forward heading + 180.
+
 Stdlib only, no X-Plane required. Not a real backend - intentionally
 NOT listed in the README's "two backends, same wire format" table.
 """
@@ -174,7 +181,7 @@ class Route:
     time only needs a linear scan, not per-request re-derivation of the whole route).
     """
 
-    def __init__(self, waypoints: list[dict], raw_legs: list[dict]) -> None:
+    def __init__(self, waypoints: list[dict], raw_legs: list[dict], reverse: bool = False) -> None:
         if len(waypoints) < 2:
             raise ValueError("route needs at least 2 waypoints")
         if len(raw_legs) != len(waypoints) - 1:
@@ -183,6 +190,7 @@ class Route:
                 f"(expected {len(waypoints) - 1})"
             )
         self.waypoints = waypoints
+        self.reverse = reverse
         self.legs: list[dict] = []
         cum_s = 0.0
         for i, raw in enumerate(raw_legs):
@@ -197,6 +205,37 @@ class Route:
                 "ias_kt": speed_kt, "bearing_true": bearing_deg(a, b),
             })
             cum_s += duration_s
+        self.forward_total_s = cum_s
+        if reverse:
+            # The same waypoints, flown last-to-first, appended right after the forward
+            # pass so one lap is "there and back" rather than an instant teleport to the
+            # start -- a straight extension of the SAME cum_s timeline position() already
+            # scans linearly, so position() itself needs no changes at all.
+            #
+            # Altitude: raw_legs[i]'s inboundAltitude is "the altitude arriving at
+            # waypoints[i+1], flying forward" -- flown in reverse, arriving back at
+            # waypoints[i+1] means DEPARTING it in the forward sense, i.e. exactly what
+            # outboundAltitude already records at that same point. Reported live: "using
+            # the reverse alt (outboundAltitude in json)".
+            #
+            # Heading: bearing_deg(b, a) freshly computed for the b->a direction, not
+            # just the forward bearing + 180 -- the true reciprocal only coincides with
+            # the other direction's initial bearing on a rhumb line; a great-circle leg's
+            # does not (negligibly for CVFR-length legs, but there is no reason to guess
+            # when the real formula is one call away).
+            for i in range(len(raw_legs) - 1, -1, -1):
+                raw = raw_legs[i]
+                a, b = waypoints[i + 1], waypoints[i]   # swapped: flying b<-a in reverse
+                dist_nm = haversine_nm(a, b)
+                speed_kt = float(raw.get("flightSpeed") or 0) or 90.0
+                duration_s = (dist_nm / speed_kt) * 3600.0
+                alt_ft = raw.get("outboundAltitude")
+                self.legs.append({
+                    "from": a, "to": b, "dist_nm": dist_nm, "duration_s": duration_s,
+                    "cum_s": cum_s, "alt_ft": alt_ft if isinstance(alt_ft, (int, float)) else 0,
+                    "ias_kt": speed_kt, "bearing_true": bearing_deg(a, b),
+                })
+                cum_s += duration_s
         self.total_s = cum_s
 
     def position(self, t: float, wind_dir_deg: "float | None" = None,
@@ -236,14 +275,14 @@ class Route:
         return lat, lon, leg["bearing_true"], leg["alt_ft"], leg["ias_kt"]
 
 
-def load_route(path: Path) -> Route:
+def load_route(path: Path, reverse: bool = False) -> Route:
     with path.open() as f:
         data = json.load(f)
     waypoints = data.get("waypoints")
     legs = data.get("legs")
     if not isinstance(waypoints, list) or not isinstance(legs, list):
         raise ValueError(f"{path}: expected a NavAid route export ({{waypoints, legs}})")
-    return Route(waypoints, legs)
+    return Route(waypoints, legs, reverse=reverse)
 
 # Animated demo flight constants. Kept at module scope so they show up
 # in the startup banner and are easy to tweak without hunting through
@@ -478,12 +517,16 @@ def banner(schema: dict, host: str, port: int, route: "Route | None",
         print(f"  clock   : {speed_factor:g}x real time")
     if route is not None:
         names = " -> ".join(wp.get("name") or "?" for wp in route.waypoints)
+        if route.reverse:
+            names += " -> " + " -> ".join(
+                (wp.get("name") or "?") for wp in reversed(route.waypoints[:-1]))
         total_nm = sum(leg["dist_nm"] for leg in route.legs)
         lap_min = route.total_s / speed_factor / 60
         print(f"  route   : {route_path} ({names})")
         print(
             f"  flight  : {total_nm:.1f} nm, {lap_min:.1f} min/lap real time, "
-            f"loops indefinitely -- per-leg altitude/speed from the route"
+            f"loops indefinitely -- per-leg altitude/speed from the route" +
+            (" (there and back -- reverse leg uses outboundAltitude)" if route.reverse else "")
         )
     else:
         lat0 = float(by_name.get("latitude", {}).get("fallback", 0.0))
@@ -520,6 +563,13 @@ def main(argv: list[str] | None = None) -> int:
                         f"{DEFAULT_ROUTE.name}")
     p.add_argument("--figure-eight", action="store_true",
                    help="Fly the old synthetic figure-8 pattern instead of a route")
+    p.add_argument("--reverse", action="store_true",
+                   help="Route mode only: after the last waypoint, fly the same route "
+                        "backwards to the first before looping -- 'there and back' "
+                        "instead of teleporting to the start. Reversed legs use each "
+                        "leg's outboundAltitude (the altitude arriving back at that "
+                        "point, flying in reverse) and a freshly-computed reciprocal "
+                        "bearing, not just the forward heading + 180.")
     p.add_argument("--wind-dir", type=float, default=None,
                    help="Constant surface wind FROM direction, deg magnetic "
                         "(default: schema fallback, 0)")
@@ -554,12 +604,15 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
             return 1
         try:
-            route = load_route(args.route)
+            route = load_route(args.route, reverse=args.reverse)
         except (ValueError, json.JSONDecodeError, KeyError) as e:
             print(f"error: couldn't load route {args.route}: {e}", file=sys.stderr)
             return 1
         by_name = {f["name"]: f for f in schema["fields"]}
         variation_deg = float(by_name.get("variation", {}).get("fallback", 0.0))
+    elif args.reverse:
+        print("error: --reverse only applies to route mode (drop --figure-eight)", file=sys.stderr)
+        return 1
 
     socketserver.TCPServer.allow_reuse_address = True
     handler_cls = make_handler(schema, t0=time.monotonic(), route=route,
