@@ -105,6 +105,8 @@ python3 tools/cvfrmap-fake.py
 
 `--route PATH` flies a different route (any NavAid route export — Save/Load route in the app, or the Route Library's export). `--figure-eight` goes back to the original synthetic pattern (two rate-1 loops over LLBG, 240 s/cycle, level at 2500 ft, 90 KIAS) instead of flying a route at all.
 
+`--wind-dir DEG --wind-speed KT` reports a constant surface wind (both fields, `wind_dir`/`wind_speed`) instead of the schema's 0/0 fallback — a CLI flag, not part of the route JSON: the route is a flight plan (waypoints + per-leg altitude/speed), wind is a session-level condition, not something a specific route should carry with it.
+
 Then point the cvfr-map page at `http://localhost:2020/` as usual. The fake is a development tool only — it's intentionally not listed in the [Two backends, same wire format](#two-backends-same-wire-format) table above.
 
 ## Schema-driven architecture

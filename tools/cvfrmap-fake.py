@@ -299,7 +299,8 @@ def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float,
 
 
 def make_handler(schema: dict, t0: float, route: "Route | None",
-                  variation_deg: float) -> type:
+                  variation_deg: float, wind_dir: "float | None" = None,
+                  wind_speed: "float | None" = None) -> type:
     """Build a request-handler class closed over the loaded schema, a single shared
     start time, and (route mode) the parsed route + magnetic variation. Every GET
     re-derives the snapshot from schema.json + the elapsed time since t0 - no
@@ -319,6 +320,15 @@ def make_handler(schema: dict, t0: float, route: "Route | None",
                 return
             snap = base_snapshot(fields)
             animate(snap, time.monotonic() - t0, lat0, lon0, route, variation_deg)
+            # Constant for the whole session -- a fake tool has no reason to vary wind
+            # over time, and neither backend does either (both report live sim/rref wind,
+            # which just doesn't change fast enough to matter here). Overrides the schema
+            # fallback (0/0) only when explicitly passed; otherwise animate()'s own
+            # untouched fields (still 0/0) stand.
+            if wind_dir is not None and "wind_dir" in snap:
+                snap["wind_dir"] = wind_dir
+            if wind_speed is not None and "wind_speed" in snap:
+                snap["wind_speed"] = wind_speed
             body = json.dumps(snap).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -337,12 +347,16 @@ def make_handler(schema: dict, t0: float, route: "Route | None",
 
 
 def banner(schema: dict, host: str, port: int, route: "Route | None",
-           route_path: "Path | None") -> None:
+           route_path: "Path | None", wind_dir: "float | None" = None,
+           wind_speed: "float | None" = None) -> None:
     version = schema.get("version", "0.0.0")
     by_name = {f["name"]: f for f in schema["fields"]}
     print("cvfr-bridge / fake (dev simulator)")
     print(f"  schema  : schema.json v{version}")
     print(f"  serving : http://{host}:{port}/")
+    if wind_dir is not None or wind_speed is not None:
+        print(f"  wind    : {wind_dir if wind_dir is not None else 0:.0f}° @ "
+              f"{wind_speed if wind_speed is not None else 0:.0f} kt")
     if route is not None:
         names = " -> ".join(wp.get("name") or "?" for wp in route.waypoints)
         total_nm = sum(leg["dist_nm"] for leg in route.legs)
@@ -386,6 +400,11 @@ def main(argv: list[str] | None = None) -> int:
                         f"{DEFAULT_ROUTE.name}")
     p.add_argument("--figure-eight", action="store_true",
                    help="Fly the old synthetic figure-8 pattern instead of a route")
+    p.add_argument("--wind-dir", type=float, default=None,
+                   help="Constant surface wind FROM direction, deg magnetic "
+                        "(default: schema fallback, 0)")
+    p.add_argument("--wind-speed", type=float, default=None,
+                   help="Constant surface wind speed, kt (default: schema fallback, 0)")
     p.add_argument("--port", type=int, default=None,
                    help="Override the schema's port")
     p.add_argument("--bind", default="0.0.0.0",
@@ -415,7 +434,8 @@ def main(argv: list[str] | None = None) -> int:
 
     socketserver.TCPServer.allow_reuse_address = True
     handler_cls = make_handler(schema, t0=time.monotonic(), route=route,
-                                variation_deg=variation_deg)
+                                variation_deg=variation_deg, wind_dir=args.wind_dir,
+                                wind_speed=args.wind_speed)
     server = socketserver.TCPServer((args.bind, port), handler_cls)
 
     def _shutdown(_sig: int, _frame: Any) -> None:
@@ -426,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _shutdown)
 
     if not args.quiet:
-        banner(schema, args.bind, port, route, args.route if route else None)
+        banner(schema, args.bind, port, route, args.route if route else None,
+               args.wind_dir, args.wind_speed)
 
     try:
         server.serve_forever()
