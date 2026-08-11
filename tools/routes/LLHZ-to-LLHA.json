@@ -58,10 +58,10 @@
   ],
   "legs": [
     {
-      "inboundAltitude": 400,
+      "inboundAltitude": 800,
       "outboundAltitude": 1200,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
       "inLabel": {
         "a": 0,
         "_default": 1,
@@ -84,111 +84,7 @@
       }
     },
     {
-      "inboundAltitude": 400,
-      "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
-      "inLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "outLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabelRet": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      }
-    },
-    {
-      "inboundAltitude": 1000,
-      "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
-      "inLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "outLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabelRet": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      }
-    },
-    {
-      "inboundAltitude": 1000,
-      "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
-      "inLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "outLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabelRet": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      }
-    },
-    {
-      "inboundAltitude": 1000,
-      "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
-      "inLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "outLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabel": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      },
-      "cumLabelRet": {
-        "a": 0,
-        "_default": 1,
-        "_m": 1
-      }
-    },
-    {
-      "inboundAltitude": 1000,
+      "inboundAltitude": 800,
       "outboundAltitude": 2000,
       "flightSpeed": 90,
       "outboundSpeed": 90,
@@ -214,7 +110,7 @@
       }
     },
     {
-      "inboundAltitude": 1000,
+      "inboundAltitude": 1500,
       "outboundAltitude": 2000,
       "flightSpeed": 90,
       "outboundSpeed": 90,
@@ -240,10 +136,10 @@
       }
     },
     {
-      "inboundAltitude": 1000,
+      "inboundAltitude": 1500,
       "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
       "inLabel": {
         "a": 0,
         "_default": 1,
@@ -268,8 +164,8 @@
     {
       "inboundAltitude": 1500,
       "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
       "inLabel": {
         "a": 0,
         "_default": 1,
@@ -294,8 +190,112 @@
     {
       "inboundAltitude": 1500,
       "outboundAltitude": 2000,
-      "flightSpeed": 110,
-      "outboundSpeed": 110,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
+      "inLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "outLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabelRet": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      }
+    },
+    {
+      "inboundAltitude": 1500,
+      "outboundAltitude": 2000,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
+      "inLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "outLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabelRet": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      }
+    },
+    {
+      "inboundAltitude": 1500,
+      "outboundAltitude": 2000,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
+      "inLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "outLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabelRet": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      }
+    },
+    {
+      "inboundAltitude": 1500,
+      "outboundAltitude": 2000,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
+      "inLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "outLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabel": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      },
+      "cumLabelRet": {
+        "a": 0,
+        "_default": 1,
+        "_m": 1
+      }
+    },
+    {
+      "inboundAltitude": 1500,
+      "outboundAltitude": 2000,
+      "flightSpeed": 90,
+      "outboundSpeed": 90,
       "inLabel": {
         "a": 0,
         "_default": 1,
