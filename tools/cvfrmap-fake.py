@@ -378,6 +378,23 @@ def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float,
         snap["sim_ready"] = True
 
 
+class _QuietServer(socketserver.TCPServer):
+    """A client resetting the connection before/while the server even reads its request
+    line (NavAid's 900 ms abort timeout; a page navigating away mid-poll) raises inside
+    socketserver's OWN request-reading machinery -- before do_GET() ever runs, so the
+    try/except around the response-write in do_GET can't see it. socketserver's default
+    handle_error() prints a full traceback per occurrence for exactly this benign,
+    once-a-second-poll-rate outcome (reported live: a ConnectionResetError traceback at
+    self._sock.recv_into(b), i.e. reading the request, the read-side twin of the
+    BrokenPipeError already handled on the write side in do_GET). Suppress only the two
+    benign disconnect exceptions; anything else still prints normally."""
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def make_handler(schema: dict, t0: float, route: "Route | None",
                   variation_deg: float, wind_dir: "float | None" = None,
                   wind_speed: "float | None" = None, speed_factor: float = 1.0) -> type:
@@ -548,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     handler_cls = make_handler(schema, t0=time.monotonic(), route=route,
                                 variation_deg=variation_deg, wind_dir=args.wind_dir,
                                 wind_speed=args.wind_speed, speed_factor=args.speed_factor)
-    server = socketserver.TCPServer((args.bind, port), handler_cls)
+    server = _QuietServer((args.bind, port), handler_cls)
 
     def _shutdown(_sig: int, _frame: Any) -> None:
         server.server_close()
