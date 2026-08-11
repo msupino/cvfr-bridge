@@ -44,6 +44,7 @@ $ curl http://localhost:2020/
 | `wind_speed` | kt | surface wind speed |
 | `qnh` | inHg | altimeter setting |
 | `sim_ready` | bool | `false` when sim hasn't placed the aircraft yet (`lat==lon==0`) |
+| `speed_factor` | multiplier | how much faster than real time the reporting clock is running (`1` = real time). Always `1` from a real backend — only `tools/cvfrmap-fake.py --speed-factor` reports anything else. A client timing something against wall-clock time (not a fresh fix every poll) needs this to scale that timing to match. |
 
 When `sim_ready: false`, position falls back to LLBG (Ben Gurion) so the iPad map shows something sensible at startup.
 
@@ -105,7 +106,9 @@ python3 tools/cvfrmap-fake.py
 
 `--route PATH` flies a different route (any NavAid route export — Save/Load route in the app, or the Route Library's export). `--figure-eight` goes back to the original synthetic pattern (two rate-1 loops over LLBG, 240 s/cycle, level at 2500 ft, 90 KIAS) instead of flying a route at all.
 
-`--wind-dir DEG --wind-speed KT` reports a constant surface wind (both fields, `wind_dir`/`wind_speed`) instead of the schema's 0/0 fallback — a CLI flag, not part of the route JSON: the route is a flight plan (waypoints + per-leg altitude/speed), wind is a session-level condition, not something a specific route should carry with it.
+`--wind-dir DEG --wind-speed KT` reports a constant surface wind (both fields, `wind_dir`/`wind_speed`) instead of the schema's 0/0 fallback — a CLI flag, not part of the route JSON: the route is a flight plan (waypoints + per-leg altitude/speed), wind is a session-level condition, not something a specific route should carry with it. In route mode it does more than just get reported: the simulated aircraft actually **drifts** with it. `heading` stays the leg's own planned bearing — the compass reading of a pilot holding that heading and never correcting for wind — while `latitude`/`longitude` follow the *resultant* ground track that heading actually produces through the wind, which is off the plotted line whenever there's a crosswind component. That's what gives NavAid's own drift-off-course alert something real to detect; a wind-corrected/on-track position never would.
+
+`--speed-factor N` scales the simulated clock (5 = fly 5x faster than real time) without changing how often a client polls — useful for covering a whole route, or waiting out the drift alert's 2-minute check, much sooner than real time would allow.
 
 Then point the cvfr-map page at `http://localhost:2020/` as usual. The fake is a development tool only — it's intentionally not listed in the [Two backends, same wire format](#two-backends-same-wire-format) table above.
 
