@@ -91,13 +91,19 @@ In X-Plane: `Settings → Network → Receive External Datarefs` must be enabled
 
 ## Develop the web UI without X-Plane
 
-[`tools/cvfrmap-fake.py`](tools/cvfrmap-fake.py) is a dev-only "third backend" that serves the same JSON shape on the same port (`2020`) as the real backends, but with no X-Plane and no UDP — just a synthetic aircraft flying a figure-8 over LLBG (two rate-1 loops, 240 s/cycle, level at 2500 ft, 90 KIAS). Use it to develop the [cvfr-map](https://msupino.github.io/cvfr-map/) web UI, tweak gauges, or demo the page when you don't have X-Plane handy. It reads `schema.json` for the port, field order, and fallbacks, so new schema fields appear in its output automatically.
+[`tools/cvfrmap-fake.py`](tools/cvfrmap-fake.py) is a dev-only "third backend" that serves the same JSON shape on the same port (`2020`) as the real backends, but with no X-Plane and no UDP. Use it to develop the [cvfr-map](https://msupino.github.io/cvfr-map/) web UI, tweak gauges, demo the page, or feed NavAid's own "Connect to simulator" (it polls this exact port/shape too) for testing in-flight features without a real flight. It reads `schema.json` for the port, field order, and fallbacks, so new schema fields appear in its output automatically.
+
+By default it flies a real planned route — [`tools/routes/LLHZ-to-LLHA.json`](tools/routes/LLHZ-to-LLHA.json), a NavAid route export — straight legs at each leg's own planned altitude and speed, looping back to the start once it reaches the end:
 
 ```bash
 python3 tools/cvfrmap-fake.py
 # → cvfr-bridge / fake (dev simulator)
 # →   serving : http://0.0.0.0:2020/
+# →   route   : tools/routes/LLHZ-to-LLHA.json (LLHZ -> BAZRA -> DEROR -> ... -> LLHA)
+# →   flight  : 46.2 nm, 31 min/lap, loops indefinitely -- per-leg altitude/speed from the route
 ```
+
+`--route PATH` flies a different route (any NavAid route export — Save/Load route in the app, or the Route Library's export). `--figure-eight` goes back to the original synthetic pattern (two rate-1 loops over LLBG, 240 s/cycle, level at 2500 ft, 90 KIAS) instead of flying a route at all.
 
 Then point the cvfr-map page at `http://localhost:2020/` as usual. The fake is a development tool only — it's intentionally not listed in the [Two backends, same wire format](#two-backends-same-wire-format) table above.
 

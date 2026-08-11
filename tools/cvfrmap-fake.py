@@ -5,7 +5,9 @@ cvfr-bridge / fake (dev simulator).
 A schema-driven dev backend that serves the cvfr-bridge JSON shape on
 the same port as the real backends, using a synthetic in-flight
 aircraft. Use it to develop, tweak, and demo the cvfr-map web UI when
-X-Plane (and the real Python/C bridges) aren't available.
+X-Plane (and the real Python/C bridges) aren't available -- or to feed
+NavAid's own "Connect to simulator" (it polls this exact port/shape
+too), for testing in-flight features without a real flight or X-Plane.
 
 Like python/cvfrmap-bridge.py, this script reads ../schema.json at
 startup as the single source of truth: port, endpoint, field order,
@@ -13,26 +15,37 @@ and per-field fallback values all come from there. Adding a field to
 schema.json automatically adds it to the fake's output (with its
 schema fallback) without a code change here.
 
-A small handful of fields are then overridden on every request with
-synthesized "in flight" values so the six-pack gauges actually move:
+Two flight modes, chosen by --route:
 
-  - latitude/longitude trace a figure-8 over the schema fallback:
-    a right loop (CW, banked right) joined to a left loop (CCW,
-    banked left), both passing through the schema's lat/lon. Each
-    half-loop is a rate-1 turn (3 deg/s, 120 s per loop, 240 s per
-    full eight). Longitude is corrected by cos(lat0) so the loops
-    look visually round on the map at LLBG's latitude.
-  - heading is computed from the analytical velocity vector along
-    the trajectory, so the nose always points where the aircraft
-    is going (continuous across the crossing point).
-  - roll flips +15 deg / -15 deg at each loop boundary (bank reversal
-    at the crossing point - exactly what a pilot does in a real
-    figure-8 maneuver). The reversal is instantaneous; we don't model
-    the brief wings-level moment.
-  - altitude is steady at 2500 ft (level turns, no climb/descent)
-  - vsi is 0, pitch is 0 (level flight)
-  - ias is a steady 90 kt
-  - sim_ready is always true (this is a fake sim - it's always live)
+  Default (no --route): a synthetic figure-8 over the schema fallback --
+  a right loop (CW, banked right) joined to a left loop (CCW, banked
+  left), both passing through the schema's lat/lon. Each half-loop is
+  a rate-1 turn (3 deg/s, 120 s per loop, 240 s per full eight).
+  Longitude is corrected by cos(lat0) so the loops look visually round
+  on the map at LLBG's latitude. Heading comes from the analytical
+  velocity vector along the trajectory (continuous across the crossing
+  point). Roll flips +-15 deg at each loop boundary (bank reversal at
+  the crossing point, instantaneous -- we don't model the brief
+  wings-level moment). Altitude steady at 2500 ft, vsi 0, pitch 0,
+  ias a steady 90 kt.
+
+  --route PATH: flies an actual planned route instead -- a JSON export
+  from NavAid (docs/app/io.js's serializeRoute(): {waypoints, legs}).
+  Each leg is flown as a straight great-circle track at its own
+  planned altitude (legs[i].inboundAltitude) and speed
+  (legs[i].flightSpeed), heading constant per leg (the leg's own
+  bearing), altitude/IAS stepping at each waypoint (no climb/descent
+  modeled -- same "steady, not smoothed" simplicity the figure-8 mode
+  already has). Once the last waypoint is reached, loops back to the
+  first so a dev server keeps running indefinitely across repeated
+  test flights. Position is the standard intermediate-point-on-a-
+  great-circle interpolation (not linear lat/lng, which drifts off
+  the actual track on a longer leg) using the same formulas and Earth
+  radius (3440.065 nm) NavAid's own geo() uses, so distances/times
+  between the two agree.
+
+  Both modes: sim_ready is always true (this is a fake sim -- it's
+  always live).
 
 Stdlib only, no X-Plane required. Not a real backend - intentionally
 NOT listed in the README's "two backends, same wire format" table.
@@ -53,6 +66,109 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_SCHEMA = Path(__file__).resolve().parent.parent / "schema.json"
+
+# Same mean Earth radius NavAid's own geo() uses (docs/app/core.js), so a route flown here
+# covers the same distance/time NavAid itself would compute for the identical route.
+EARTH_NM = 3440.065
+
+
+def haversine_nm(a: dict, b: dict) -> float:
+    """Great-circle distance between {"lat","lng"} points, in nm."""
+    phi1, phi2 = math.radians(a["lat"]), math.radians(b["lat"])
+    dphi = math.radians(b["lat"] - a["lat"])
+    dlam = math.radians(b["lng"] - a["lng"])
+    h = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return 2 * EARTH_NM * math.asin(min(1.0, math.sqrt(h)))
+
+
+def bearing_deg(a: dict, b: dict) -> float:
+    """Initial great-circle bearing from a to b, in degrees true, 0-360."""
+    phi1, phi2 = math.radians(a["lat"]), math.radians(b["lat"])
+    dlam = math.radians(b["lng"] - a["lng"])
+    y = math.sin(dlam) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlam)
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def intermediate_point(a: dict, b: dict, dist_nm: float, frac: float) -> tuple[float, float]:
+    """Point a fraction `frac` (0..1) of the way from a to b along their great circle.
+    Standard slerp-style intermediate-point formula -- NOT linear lat/lng interpolation,
+    which visibly drifts inside the arc on anything but a very short leg."""
+    if dist_nm <= 0:
+        return a["lat"], a["lng"]
+    d = dist_nm / EARTH_NM
+    sin_d = math.sin(d)
+    if abs(sin_d) < 1e-12:
+        return a["lat"], a["lng"]
+    A = math.sin((1 - frac) * d) / sin_d
+    B = math.sin(frac * d) / sin_d
+    phi1, lam1 = math.radians(a["lat"]), math.radians(a["lng"])
+    phi2, lam2 = math.radians(b["lat"]), math.radians(b["lng"])
+    x = A * math.cos(phi1) * math.cos(lam1) + B * math.cos(phi2) * math.cos(lam2)
+    y = A * math.cos(phi1) * math.sin(lam1) + B * math.cos(phi2) * math.sin(lam2)
+    z = A * math.sin(phi1) + B * math.sin(phi2)
+    lat = math.degrees(math.atan2(z, math.sqrt(x * x + y * y)))
+    lon = math.degrees(math.atan2(y, x))
+    return lat, lon
+
+
+class Route:
+    """A parsed NavAid route export, ready to be flown on a loop.
+
+    Each entry in `legs` is one leg: {from, to, dist_nm, duration_s, alt_ft, ias_kt,
+    bearing_true}. `cum_s` is each leg's START time within one lap (so a given elapsed
+    time only needs a linear scan, not per-request re-derivation of the whole route).
+    """
+
+    def __init__(self, waypoints: list[dict], raw_legs: list[dict]) -> None:
+        if len(waypoints) < 2:
+            raise ValueError("route needs at least 2 waypoints")
+        if len(raw_legs) != len(waypoints) - 1:
+            raise ValueError(
+                f"route has {len(waypoints)} waypoints but {len(raw_legs)} legs "
+                f"(expected {len(waypoints) - 1})"
+            )
+        self.waypoints = waypoints
+        self.legs: list[dict] = []
+        cum_s = 0.0
+        for i, raw in enumerate(raw_legs):
+            a, b = waypoints[i], waypoints[i + 1]
+            dist_nm = haversine_nm(a, b)
+            speed_kt = float(raw.get("flightSpeed") or 0) or 90.0  # never divide by zero
+            duration_s = (dist_nm / speed_kt) * 3600.0
+            alt_ft = raw.get("inboundAltitude")
+            self.legs.append({
+                "from": a, "to": b, "dist_nm": dist_nm, "duration_s": duration_s,
+                "cum_s": cum_s, "alt_ft": alt_ft if isinstance(alt_ft, (int, float)) else 0,
+                "ias_kt": speed_kt, "bearing_true": bearing_deg(a, b),
+            })
+            cum_s += duration_s
+        self.total_s = cum_s
+
+    def position(self, t: float) -> tuple[float, float, float, float, float]:
+        """(lat, lon, heading_true, altitude_ft, ias_kt) at elapsed time t, looping
+        back to the start once the route completes."""
+        t = t % self.total_s if self.total_s > 0 else 0.0
+        leg = self.legs[-1]
+        for candidate in self.legs:
+            if t < candidate["cum_s"] + candidate["duration_s"]:
+                leg = candidate
+                break
+        frac = 0.0
+        if leg["duration_s"] > 0:
+            frac = max(0.0, min(1.0, (t - leg["cum_s"]) / leg["duration_s"]))
+        lat, lon = intermediate_point(leg["from"], leg["to"], leg["dist_nm"], frac)
+        return lat, lon, leg["bearing_true"], leg["alt_ft"], leg["ias_kt"]
+
+
+def load_route(path: Path) -> Route:
+    with path.open() as f:
+        data = json.load(f)
+    waypoints = data.get("waypoints")
+    legs = data.get("legs")
+    if not isinstance(waypoints, list) or not isinstance(legs, list):
+        raise ValueError(f"{path}: expected a NavAid route export ({{waypoints, legs}})")
+    return Route(waypoints, legs)
 
 # Animated demo flight constants. Kept at module scope so they show up
 # in the startup banner and are easy to tweak without hunting through
@@ -133,22 +249,34 @@ def figure_eight(t: float, lat0: float, lon0: float) -> tuple[float, float, floa
     return lat, lon, heading % 360.0, bank
 
 
-def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float) -> None:
+def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float,
+            route: "Route | None" = None, variation_deg: float = 0.0) -> None:
     """Overlay synthesized flight values onto the schema-default
     snapshot. Only touches fields that participate in the demo flight;
     everything else stays at its schema fallback so new schema fields
     keep working without a change here."""
-    lat, lon, heading, bank = figure_eight(t, lat0, lon0)
-
-    if ALT_AMPLITUDE_FT != 0.0 and ALT_PERIOD_S > 0.0:
-        omega = 2.0 * math.pi / ALT_PERIOD_S
-        alt = ALT_CENTER_FT + ALT_AMPLITUDE_FT * math.sin(omega * t)
-        vsi_fpm = ALT_AMPLITUDE_FT * omega * math.cos(omega * t) * 60.0
-        pitch_norm = math.cos(omega * t)
-    else:
-        alt = ALT_CENTER_FT
+    if route is not None:
+        # Straight legs, no maneuvering to model -- level, wings-level between waypoints
+        # (a real climb/descent/turn isn't simulated, same "steady, not smoothed"
+        # simplicity the figure-8 mode already has for its own altitude/vsi/pitch).
+        lat, lon, heading_true, alt, ias_kt = route.position(t)
+        heading = (heading_true - variation_deg) % 360.0   # magnetic, matching the schema's
+        bank = 0.0                                          # own "heading" field semantics
         vsi_fpm = 0.0
         pitch_norm = 0.0
+        ias = ias_kt
+    else:
+        lat, lon, heading, bank = figure_eight(t, lat0, lon0)
+        ias = IAS_KT
+        if ALT_AMPLITUDE_FT != 0.0 and ALT_PERIOD_S > 0.0:
+            omega = 2.0 * math.pi / ALT_PERIOD_S
+            alt = ALT_CENTER_FT + ALT_AMPLITUDE_FT * math.sin(omega * t)
+            vsi_fpm = ALT_AMPLITUDE_FT * omega * math.cos(omega * t) * 60.0
+            pitch_norm = math.cos(omega * t)
+        else:
+            alt = ALT_CENTER_FT
+            vsi_fpm = 0.0
+            pitch_norm = 0.0
 
     if "latitude" in snap:
         snap["latitude"] = round(lat, 6)
@@ -165,15 +293,17 @@ def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float) -
     if "vsi" in snap:
         snap["vsi"] = int(round(vsi_fpm))
     if "ias" in snap:
-        snap["ias"] = round(IAS_KT, 1)
+        snap["ias"] = round(ias, 1)
     if "sim_ready" in snap:
         snap["sim_ready"] = True
 
 
-def make_handler(schema: dict, t0: float) -> type:
-    """Build a request-handler class closed over the loaded schema and
-    a single shared start time. Every GET re-derives the snapshot from
-    schema.json + the elapsed time since t0 - no per-request state."""
+def make_handler(schema: dict, t0: float, route: "Route | None",
+                  variation_deg: float) -> type:
+    """Build a request-handler class closed over the loaded schema, a single shared
+    start time, and (route mode) the parsed route + magnetic variation. Every GET
+    re-derives the snapshot from schema.json + the elapsed time since t0 - no
+    per-request state."""
     endpoint = schema["endpoint"]
     fields = schema["fields"]
     by_name = {f["name"]: f for f in fields}
@@ -188,7 +318,7 @@ def make_handler(schema: dict, t0: float) -> type:
                 self.end_headers()
                 return
             snap = base_snapshot(fields)
-            animate(snap, time.monotonic() - t0, lat0, lon0)
+            animate(snap, time.monotonic() - t0, lat0, lon0, route, variation_deg)
             body = json.dumps(snap).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -206,26 +336,42 @@ def make_handler(schema: dict, t0: float) -> type:
     return Handler
 
 
-def banner(schema: dict, host: str, port: int) -> None:
+def banner(schema: dict, host: str, port: int, route: "Route | None",
+           route_path: "Path | None") -> None:
     version = schema.get("version", "0.0.0")
     by_name = {f["name"]: f for f in schema["fields"]}
-    lat0 = float(by_name.get("latitude", {}).get("fallback", 0.0))
-    lon0 = float(by_name.get("longitude", {}).get("fallback", 0.0))
-    if ALT_AMPLITUDE_FT != 0.0:
-        alt_desc = f"~{int(ALT_CENTER_FT)} ft \u00b1 {int(ALT_AMPLITUDE_FT)} ft"
-    else:
-        alt_desc = f"level @ {int(ALT_CENTER_FT)} ft"
     print("cvfr-bridge / fake (dev simulator)")
     print(f"  schema  : schema.json v{version}")
     print(f"  serving : http://{host}:{port}/")
-    print(
-        f"  pattern : figure-8 around {lat0:.4f},{lon0:.4f} "
-        f"(R={ORBIT_RADIUS_DEG}\u00b0, rate-1 per loop, "
-        f"\u00b1{BANK_DEG:.0f}\u00b0 bank, "
-        f"{int(PATTERN_PERIOD_S)} s/cycle), {alt_desc}, "
-        f"IAS {IAS_KT:.0f} kt"
-    )
+    if route is not None:
+        names = " -> ".join(wp.get("name") or "?" for wp in route.waypoints)
+        total_nm = sum(leg["dist_nm"] for leg in route.legs)
+        print(f"  route   : {route_path} ({names})")
+        print(
+            f"  flight  : {total_nm:.1f} nm, {route.total_s / 60:.0f} min/lap, "
+            f"loops indefinitely -- per-leg altitude/speed from the route"
+        )
+    else:
+        lat0 = float(by_name.get("latitude", {}).get("fallback", 0.0))
+        lon0 = float(by_name.get("longitude", {}).get("fallback", 0.0))
+        if ALT_AMPLITUDE_FT != 0.0:
+            alt_desc = f"~{int(ALT_CENTER_FT)} ft \u00b1 {int(ALT_AMPLITUDE_FT)} ft"
+        else:
+            alt_desc = f"level @ {int(ALT_CENTER_FT)} ft"
+        print(
+            f"  pattern : figure-8 around {lat0:.4f},{lon0:.4f} "
+            f"(R={ORBIT_RADIUS_DEG}\u00b0, rate-1 per loop, "
+            f"\u00b1{BANK_DEG:.0f}\u00b0 bank, "
+            f"{int(PATTERN_PERIOD_S)} s/cycle), {alt_desc}, "
+            f"IAS {IAS_KT:.0f} kt"
+        )
     print("Ctrl-C to stop.")
+
+
+# Bundled default: NavAid's own LLHZ -> LLHA route export, so `python3 cvfrmap-fake.py`
+# with no arguments flies a real planned route out of the box instead of an arbitrary
+# orbit. Use --figure-eight for the old synthetic pattern, or --route for a different one.
+DEFAULT_ROUTE = Path(__file__).resolve().parent / "routes" / "LLHZ-to-LLHA.json"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -234,6 +380,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA,
                    help=f"Path to schema.json (default: {DEFAULT_SCHEMA})")
+    p.add_argument("--route", type=Path, default=DEFAULT_ROUTE,
+                   help="NavAid route export to fly (JSON: {waypoints, legs} -- "
+                        f"see docs/app/io.js's serializeRoute()). Default: bundled "
+                        f"{DEFAULT_ROUTE.name}")
+    p.add_argument("--figure-eight", action="store_true",
+                   help="Fly the old synthetic figure-8 pattern instead of a route")
     p.add_argument("--port", type=int, default=None,
                    help="Override the schema's port")
     p.add_argument("--bind", default="0.0.0.0",
@@ -245,8 +397,25 @@ def main(argv: list[str] | None = None) -> int:
     schema = load_schema(args.schema)
     port = args.port if args.port is not None else int(schema["port"])
 
+    route: Route | None = None
+    variation_deg = 0.0
+    if not args.figure_eight:
+        if not args.route.exists():
+            print(f"error: route file not found: {args.route}", file=sys.stderr)
+            print("       pass --figure-eight for the old synthetic pattern instead.",
+                  file=sys.stderr)
+            return 1
+        try:
+            route = load_route(args.route)
+        except (ValueError, json.JSONDecodeError, KeyError) as e:
+            print(f"error: couldn't load route {args.route}: {e}", file=sys.stderr)
+            return 1
+        by_name = {f["name"]: f for f in schema["fields"]}
+        variation_deg = float(by_name.get("variation", {}).get("fallback", 0.0))
+
     socketserver.TCPServer.allow_reuse_address = True
-    handler_cls = make_handler(schema, t0=time.monotonic())
+    handler_cls = make_handler(schema, t0=time.monotonic(), route=route,
+                                variation_deg=variation_deg)
     server = socketserver.TCPServer((args.bind, port), handler_cls)
 
     def _shutdown(_sig: int, _frame: Any) -> None:
@@ -257,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _shutdown)
 
     if not args.quiet:
-        banner(schema, args.bind, port)
+        banner(schema, args.bind, port, route, args.route if route else None)
 
     try:
         server.serve_forever()
