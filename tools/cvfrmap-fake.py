@@ -420,13 +420,23 @@ def make_handler(schema: dict, t0: float, route: "Route | None",
             if "speed_factor" in snap:
                 snap["speed_factor"] = speed_factor
             body = json.dumps(snap).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # The client (NavAid's own 900 ms abort timeout; a page navigating away
+                # mid-poll) closed the connection before this response finished sending --
+                # a normal outcome at a once-a-second poll rate, not a real error. Silently
+                # dropping this one response is correct; the client just tries again next
+                # poll. Left uncaught, this crashed the whole request-handling thread with a
+                # traceback per occurrence, drowning the terminal exactly where a fake dev
+                # tool is supposed to stay out of the way.
+                pass
 
         def log_message(self, *_args: Any, **_kwargs: Any) -> None:
             # Per-request access logs would otherwise drown the terminal
