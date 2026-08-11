@@ -47,6 +47,20 @@ Two flight modes, chosen by --route:
   Both modes: sim_ready is always true (this is a fake sim -- it's
   always live).
 
+--wind-dir DEG --wind-speed KT (route mode only): a constant surface wind,
+reported in wind_dir/wind_speed AND actually flown -- heading stays the
+leg's own planned bearing (a non-correcting pilot's compass reading), while
+position follows the RESULTANT ground track that heading produces through
+the wind, drifting off the plotted line whenever there's a crosswind
+component. That's deliberate: it gives NavAid's own drift-off-course alert
+a genuinely drifting aircraft to detect, which an on-track/wind-corrected
+position never would. See resultant_track()'s docstring for the exact
+distinction from a wind-CORRECTION calculation.
+
+--speed-factor N scales the simulated clock (5 = fly 5x faster than real
+time) without changing how often a client polls -- covers a route, or
+waits out the drift alert's 2-minute check, much sooner.
+
 Stdlib only, no X-Plane required. Not a real backend - intentionally
 NOT listed in the README's "two backends, same wire format" table.
 """
@@ -112,6 +126,46 @@ def intermediate_point(a: dict, b: dict, dist_nm: float, frac: float) -> tuple[f
     return lat, lon
 
 
+def destination_point(start: dict, bearing_deg_: float, dist_nm: float) -> tuple[float, float]:
+    """Point dist_nm along great-circle bearing bearing_deg_ from start. The direct/forward
+    geodesic problem -- given where you are, which way you're pointed, and how far you've
+    gone, where are you now. Standard formula, the natural counterpart to bearing_deg()
+    and haversine_nm() above (which solve the INVERSE problem: given two points, what
+    bearing/distance connects them)."""
+    if dist_nm <= 0:
+        return start["lat"], start["lng"]
+    d = dist_nm / EARTH_NM
+    brg = math.radians(bearing_deg_)
+    phi1, lam1 = math.radians(start["lat"]), math.radians(start["lng"])
+    phi2 = math.asin(math.sin(phi1) * math.cos(d) + math.cos(phi1) * math.sin(d) * math.cos(brg))
+    lam2 = lam1 + math.atan2(math.sin(brg) * math.sin(d) * math.cos(phi1),
+                              math.cos(d) - math.sin(phi1) * math.sin(phi2))
+    return math.degrees(phi2), math.degrees(lam2)
+
+
+def resultant_track(heading_true_deg: float, tas_kt: float, wind_dir_deg: float,
+                     wind_speed_kt: float) -> tuple[float, float]:
+    """Ground track (bearing_deg, gs_kt) resulting from HOLDING heading_true_deg at tas_kt
+    through a wind, WITHOUT correcting for it -- the drift a pilot who dialled in the
+    planned course and never adjusted for wind actually flies. (This is deliberately not a
+    wind-correction/intercept calculation -- see windTriangle() in NavAid's own
+    docs/app/core.js for that; this fake tool exists to feed NavAid's DRIFT alert a
+    genuinely drifting aircraft to detect, not to arrive at a heading that avoids drifting
+    at all.) Plain vector addition: TAS vector at the held heading, plus the wind's own
+    velocity vector (wind_dir is the FROM direction, so the air mass moves TOWARD
+    wind_dir+180). No-wind (wind_speed_kt <= 0) returns (heading_true_deg, tas_kt) exactly,
+    i.e. the held heading with no drift at all."""
+    if not (wind_speed_kt > 0):
+        return heading_true_deg, tas_kt
+    hx = tas_kt * math.sin(math.radians(heading_true_deg))
+    hy = tas_kt * math.cos(math.radians(heading_true_deg))
+    wind_to_deg = (wind_dir_deg + 180.0) % 360.0
+    wx = wind_speed_kt * math.sin(math.radians(wind_to_deg))
+    wy = wind_speed_kt * math.cos(math.radians(wind_to_deg))
+    vx, vy = hx + wx, hy + wy
+    return math.degrees(math.atan2(vx, vy)) % 360.0, math.hypot(vx, vy)
+
+
 class Route:
     """A parsed NavAid route export, ready to be flown on a loop.
 
@@ -145,19 +199,40 @@ class Route:
             cum_s += duration_s
         self.total_s = cum_s
 
-    def position(self, t: float) -> tuple[float, float, float, float, float]:
-        """(lat, lon, heading_true, altitude_ft, ias_kt) at elapsed time t, looping
-        back to the start once the route completes."""
+    def position(self, t: float, wind_dir_deg: "float | None" = None,
+                 wind_speed_kt: "float | None" = None) -> tuple[float, float, float, float, float]:
+        """(lat, lon, heading_true, altitude_ft, ias_kt) at elapsed time t, looping back
+        to the start once the route completes. heading_true is always the leg's own
+        planned bearing -- the compass heading actually held, whether or not wind is
+        drifting the aircraft off of it (a non-correcting pilot's heading indicator
+        doesn't know it's drifting either).
+
+        No wind: position is the intended track (intermediate_point along from->to) --
+        unchanged from before wind support existed. With wind: position instead follows
+        the RESULTANT ground track of holding that heading at ias_kt through the wind
+        (resultant_track + destination_point) -- a straight line from the leg's start, at
+        the resultant's own bearing/speed, which is NOT the from->to line whenever there's
+        a crosswind component. This is what actually gives NavAid's drift alert something
+        to detect; a corrected/on-track position never would (see resultant_track's own
+        docstring for why this isn't a wind-CORRECTED heading).
+        """
         t = t % self.total_s if self.total_s > 0 else 0.0
         leg = self.legs[-1]
         for candidate in self.legs:
             if t < candidate["cum_s"] + candidate["duration_s"]:
                 leg = candidate
                 break
-        frac = 0.0
+        elapsed_s = max(0.0, t - leg["cum_s"])
         if leg["duration_s"] > 0:
-            frac = max(0.0, min(1.0, (t - leg["cum_s"]) / leg["duration_s"]))
-        lat, lon = intermediate_point(leg["from"], leg["to"], leg["dist_nm"], frac)
+            elapsed_s = min(elapsed_s, leg["duration_s"])
+        if wind_dir_deg is not None and wind_speed_kt is not None and wind_speed_kt > 0:
+            track_deg, gs_kt = resultant_track(leg["bearing_true"], leg["ias_kt"],
+                                                wind_dir_deg, wind_speed_kt)
+            dist_flown_nm = gs_kt * (elapsed_s / 3600.0)
+            lat, lon = destination_point(leg["from"], track_deg, dist_flown_nm)
+        else:
+            frac = (elapsed_s / leg["duration_s"]) if leg["duration_s"] > 0 else 0.0
+            lat, lon = intermediate_point(leg["from"], leg["to"], leg["dist_nm"], frac)
         return lat, lon, leg["bearing_true"], leg["alt_ft"], leg["ias_kt"]
 
 
@@ -250,7 +325,9 @@ def figure_eight(t: float, lat0: float, lon0: float) -> tuple[float, float, floa
 
 
 def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float,
-            route: "Route | None" = None, variation_deg: float = 0.0) -> None:
+            route: "Route | None" = None, variation_deg: float = 0.0,
+            wind_dir_deg: "float | None" = None,
+            wind_speed_kt: "float | None" = None) -> None:
     """Overlay synthesized flight values onto the schema-default
     snapshot. Only touches fields that participate in the demo flight;
     everything else stays at its schema fallback so new schema fields
@@ -258,8 +335,11 @@ def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float,
     if route is not None:
         # Straight legs, no maneuvering to model -- level, wings-level between waypoints
         # (a real climb/descent/turn isn't simulated, same "steady, not smoothed"
-        # simplicity the figure-8 mode already has for its own altitude/vsi/pitch).
-        lat, lon, heading_true, alt, ias_kt = route.position(t)
+        # simplicity the figure-8 mode already has for its own altitude/vsi/pitch). Wind
+        # drift, if any, is baked into (lat, lon) already -- see Route.position()'s own
+        # docstring. heading_true is always the constant, HELD leg bearing: what the
+        # aircraft is pointed at, whether or not the wind is quietly drifting it sideways.
+        lat, lon, heading_true, alt, ias_kt = route.position(t, wind_dir_deg, wind_speed_kt)
         heading = (heading_true - variation_deg) % 360.0   # magnetic, matching the schema's
         bank = 0.0                                          # own "heading" field semantics
         vsi_fpm = 0.0
@@ -300,7 +380,7 @@ def animate(snap: "OrderedDict[str, Any]", t: float, lat0: float, lon0: float,
 
 def make_handler(schema: dict, t0: float, route: "Route | None",
                   variation_deg: float, wind_dir: "float | None" = None,
-                  wind_speed: "float | None" = None) -> type:
+                  wind_speed: "float | None" = None, speed_factor: float = 1.0) -> type:
     """Build a request-handler class closed over the loaded schema, a single shared
     start time, and (route mode) the parsed route + magnetic variation. Every GET
     re-derives the snapshot from schema.json + the elapsed time since t0 - no
@@ -319,7 +399,12 @@ def make_handler(schema: dict, t0: float, route: "Route | None",
                 self.end_headers()
                 return
             snap = base_snapshot(fields)
-            animate(snap, time.monotonic() - t0, lat0, lon0, route, variation_deg)
+            # Scales the SIMULATED clock, not the poll rate -- a 5x factor means the
+            # aircraft covers 5x the ground per real second (and the figure-8's loops and
+            # the route's leg-boundary/loop-back timing all run 5x too), without changing
+            # how often NavAid (or cvfr-map) actually asks for a fix.
+            animate(snap, (time.monotonic() - t0) * speed_factor, lat0, lon0, route,
+                    variation_deg, wind_dir, wind_speed)
             # Constant for the whole session -- a fake tool has no reason to vary wind
             # over time, and neither backend does either (both report live sim/rref wind,
             # which just doesn't change fast enough to matter here). Overrides the schema
@@ -329,6 +414,11 @@ def make_handler(schema: dict, t0: float, route: "Route | None",
                 snap["wind_dir"] = wind_dir
             if wind_speed is not None and "wind_speed" in snap:
                 snap["wind_speed"] = wind_speed
+            # Always reported (unlike wind, which only overrides when explicitly passed) --
+            # 1.0 is a legitimate, meaningful value here (real time), not "nothing set", so
+            # a client can always trust this field instead of needing to assume 1 when absent.
+            if "speed_factor" in snap:
+                snap["speed_factor"] = speed_factor
             body = json.dumps(snap).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -348,7 +438,7 @@ def make_handler(schema: dict, t0: float, route: "Route | None",
 
 def banner(schema: dict, host: str, port: int, route: "Route | None",
            route_path: "Path | None", wind_dir: "float | None" = None,
-           wind_speed: "float | None" = None) -> None:
+           wind_speed: "float | None" = None, speed_factor: float = 1.0) -> None:
     version = schema.get("version", "0.0.0")
     by_name = {f["name"]: f for f in schema["fields"]}
     print("cvfr-bridge / fake (dev simulator)")
@@ -357,12 +447,15 @@ def banner(schema: dict, host: str, port: int, route: "Route | None",
     if wind_dir is not None or wind_speed is not None:
         print(f"  wind    : {wind_dir if wind_dir is not None else 0:.0f}° @ "
               f"{wind_speed if wind_speed is not None else 0:.0f} kt")
+    if speed_factor != 1.0:
+        print(f"  clock   : {speed_factor:g}x real time")
     if route is not None:
         names = " -> ".join(wp.get("name") or "?" for wp in route.waypoints)
         total_nm = sum(leg["dist_nm"] for leg in route.legs)
+        lap_min = route.total_s / speed_factor / 60
         print(f"  route   : {route_path} ({names})")
         print(
-            f"  flight  : {total_nm:.1f} nm, {route.total_s / 60:.0f} min/lap, "
+            f"  flight  : {total_nm:.1f} nm, {lap_min:.1f} min/lap real time, "
             f"loops indefinitely -- per-leg altitude/speed from the route"
         )
     else:
@@ -405,6 +498,11 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: schema fallback, 0)")
     p.add_argument("--wind-speed", type=float, default=None,
                    help="Constant surface wind speed, kt (default: schema fallback, 0)")
+    p.add_argument("--speed-factor", type=float, default=1.0,
+                   help="Scale the simulated clock (e.g. 5 = fly 5x faster than real "
+                        "time -- covers a route, or waits out the drift alert's 2-minute "
+                        "check, much sooner). Does not change how often a client polls. "
+                        "Default: 1 (real time)")
     p.add_argument("--port", type=int, default=None,
                    help="Override the schema's port")
     p.add_argument("--bind", default="0.0.0.0",
@@ -412,6 +510,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--quiet", action="store_true",
                    help="Suppress the startup banner")
     args = p.parse_args(argv)
+
+    if not (args.speed_factor > 0):
+        print(f"error: --speed-factor must be positive, got {args.speed_factor}", file=sys.stderr)
+        return 1
 
     schema = load_schema(args.schema)
     port = args.port if args.port is not None else int(schema["port"])
@@ -435,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
     socketserver.TCPServer.allow_reuse_address = True
     handler_cls = make_handler(schema, t0=time.monotonic(), route=route,
                                 variation_deg=variation_deg, wind_dir=args.wind_dir,
-                                wind_speed=args.wind_speed)
+                                wind_speed=args.wind_speed, speed_factor=args.speed_factor)
     server = socketserver.TCPServer((args.bind, port), handler_cls)
 
     def _shutdown(_sig: int, _frame: Any) -> None:
@@ -447,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.quiet:
         banner(schema, args.bind, port, route, args.route if route else None,
-               args.wind_dir, args.wind_speed)
+               args.wind_dir, args.wind_speed, args.speed_factor)
 
     try:
         server.serve_forever()

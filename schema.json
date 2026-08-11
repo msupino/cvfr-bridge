@@ -135,6 +135,15 @@
       "description": "false when the sim hasn't placed an aircraft yet (lat == lon == 0)",
       "source": { "kind": "computed", "expression": "rpos_latitude != 0 || rpos_longitude != 0" },
       "fallback": false
+    },
+    {
+      "name": "speed_factor",
+      "type": "double",
+      "format": "%.1f",
+      "unit": "multiplier",
+      "description": "how much faster than real time the reporting aircraft's own clock is running (1 = real time). Real backends (X-Plane) always report 1 -- only tools/cvfrmap-fake.py's --speed-factor can report anything else. A client timing something against WALL-CLOCK time (not a fresh fix on every poll) needs this to scale that timing to match, or its own checks run too slowly relative to a sped-up aircraft.",
+      "source": { "kind": "computed", "expression": "1.0" },
+      "fallback": 1.0
     }
   ]
 }
